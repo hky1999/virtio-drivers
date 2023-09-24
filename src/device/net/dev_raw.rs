@@ -26,12 +26,8 @@ pub struct VirtIONetRaw<H: Hal, T: Transport, const QUEUE_SIZE: usize> {
 impl<H: Hal, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, T, QUEUE_SIZE> {
     /// Create a new VirtIO-Net driver.
     pub fn new(mut transport: T) -> Result<Self> {
-        transport.begin_init(|features| {
-            let features = Features::from_bits_truncate(features);
-            info!("Device features {:?}", features);
-            let supported_features = Features::MAC | Features::STATUS;
-            (features & supported_features).bits()
-        });
+        let negotiated_features = transport.begin_init(Features::MAC | Features::STATUS);
+        info!("negotiated_features {:?}", negotiated_features);
         // read configuration space
         let config = transport.config_space::<Config>()?;
         let mac;
@@ -45,8 +41,18 @@ impl<H: Hal, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, T, QUEUE_SIZ
             );
         }
 
-        let recv_queue = VirtQueue::new(&mut transport, QUEUE_RECEIVE)?;
-        let xmit_queue = VirtQueue::new(&mut transport, QUEUE_TRANSMIT)?;
+        let recv_queue = VirtQueue::new(
+            &mut transport,
+            QUEUE_RECEIVE,
+            false,
+            negotiated_features.contains(Features::RING_EVENT_IDX),
+        )?;
+        let xmit_queue = VirtQueue::new(
+            &mut transport,
+            QUEUE_TRANSMIT,
+            false,
+            negotiated_features.contains(Features::RING_EVENT_IDX),
+        )?;
         transport.finish_init();
 
         Ok(VirtIONetRaw {
