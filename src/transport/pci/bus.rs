@@ -14,10 +14,26 @@ const MAX_DEVICES: u8 = 32;
 /// The maximum number of functions on a device.
 const MAX_FUNCTIONS: u8 = 8;
 
+/// The port specifies the configuration address that is required to be accesses.
+const CONFIG_ADDRESS_PORT: u16 = 0xCF8;
+/// The accesses to CONFIG_DATA port will actually generate the configuration access and will transfer the data to or from the CONFIG_DATA register.
+const CONFIG_DATA_PORT: u16 = 0xCFC;
+
+/// The Enable Bit of CONFIG_ADDRESS_PORT.
+const CONFIG_ADDRESS_ENABLE: u32 = 1 << 31;
+
+/// The offset in bytes to the device ID and vendor ID fields within PCI configuration space.
+const DEVICE_ID_VENDOR_ID_OFFSET: u8 = 0x00;
 /// The offset in bytes to the status and command fields within PCI configuration space.
 const STATUS_COMMAND_OFFSET: u8 = 0x04;
+/// The offset in bytes to the class code subclass prog if and revision ID within PCI configuration space.
+const CLASS_SUBCLASS_PROG_IF_REVISION_ID_OFFSET: u8 = 0x08;
+/// The offset in bytes to the BIST, header type, latency timer	and cache line size within PCI configuration space.
+const BIST_HEADER_LATENCY_CACHE_SIZE_OFFSET: u8 = 0x0C;
 /// The offset in bytes to BAR0 within PCI configuration space.
 const BAR0_OFFSET: u8 = 0x10;
+/// The offset in bytes to max latency, min grant, interrupt pin and interrupt line within PCI configuration space.
+const MAX_LATENCY_MIN_GRANT_INTERRUPT_PIN_INTERRUPT_LINE_OFFSET: u8 = 0x3C;
 
 /// ID for vendor-specific PCI capabilities.
 pub const PCI_CAP_ID_VNDR: u8 = 0x09;
@@ -113,6 +129,34 @@ pub enum Cam {
     ///
     /// This provides access to 4 KiB of configuration space per device function.
     Ecam,
+    /// The PCI port Configuration Access Mechanism.
+    ///
+    /// Two 32-bit I/O locations (0xcf8, 0xcfc) are used.
+    PIO,
+}
+
+/// Reads 4 bytes from configuration space using port io.
+pub fn pio_read_config(bus: u32, device: u32, register: u32) -> u32 {
+    use x86_64::instructions::port::{PortReadOnly, PortWriteOnly};
+    let address = CONFIG_ADDRESS_ENABLE | bus << 16 | device << 11 | register;
+    let mut config_address_port = PortWriteOnly::<u32>::new(CONFIG_ADDRESS_PORT);
+    let mut config_data_port = PortReadOnly::<u32>::new(CONFIG_DATA_PORT);
+    unsafe {
+        config_address_port.write(address);
+        config_data_port.read()
+    }
+}
+
+/// Writes 4 bytes to configuration space using port io.
+pub fn pio_write_config(bus: u32, device: u32, register: u32, data: u32) {
+    use x86_64::instructions::port::PortWriteOnly;
+    let address = CONFIG_ADDRESS_ENABLE | bus << 16 | device << 11 | register;
+    let mut config_address_port = PortWriteOnly::<u32>::new(CONFIG_ADDRESS_PORT);
+    let mut config_data_port = PortWriteOnly::<u32>::new(CONFIG_DATA_PORT);
+    unsafe {
+        config_address_port.write(address);
+        config_data_port.write(data)
+    }
 }
 
 impl Cam {
@@ -121,6 +165,7 @@ impl Cam {
         match self {
             Self::MmioCam => 0x1000000,
             Self::Ecam => 0x10000000,
+            _ => 0x0,
         }
     }
 }
@@ -167,6 +212,7 @@ impl PciRoot {
             bdf << match self.cam {
                 Cam::MmioCam => 8,
                 Cam::Ecam => 12,
+                _ => panic!("wrong cam"),
             } | register_offset as u32;
         // Ensure that address is within range.
         assert!(address < self.cam.size());
@@ -181,6 +227,13 @@ impl PciRoot {
         device_function: DeviceFunction,
         register_offset: u8,
     ) -> u32 {
+        if self.cam == Cam::PIO {
+            return pio_read_config(
+                device_function.bus as u32,
+                (device_function.device << 3 | device_function.function) as u32,
+                register_offset as u32,
+            );
+        }
         let address = self.cam_offset(device_function, register_offset);
         // Safe because both the `mmio_base` and the address offset are properly aligned, and the
         // resulting pointer is within the MMIO range of the CAM.
@@ -197,6 +250,14 @@ impl PciRoot {
         register_offset: u8,
         data: u32,
     ) {
+        if self.cam == Cam::PIO {
+            return pio_write_config(
+                device_function.bus as u32,
+                (device_function.device << 3 | device_function.function) as u32,
+                register_offset as u32,
+                data,
+            );
+        }
         let address = self.cam_offset(device_function, register_offset);
         // Safe because both the `mmio_base` and the address offset are properly aligned, and the
         // resulting pointer is within the MMIO range of the CAM.
@@ -489,7 +550,9 @@ impl Iterator for BusDeviceIterator {
         while self.next.device < MAX_DEVICES {
             // Read the header for the current device and function.
             let current = self.next;
-            let device_vendor = self.root.config_read_word(current, 0);
+            let device_vendor = self
+                .root
+                .config_read_word(current, DEVICE_ID_VENDOR_ID_OFFSET);
 
             // Advance to the next device or function.
             self.next.function += 1;
@@ -499,15 +562,25 @@ impl Iterator for BusDeviceIterator {
             }
 
             if device_vendor != INVALID_READ {
-                let class_revision = self.root.config_read_word(current, 8);
+                let class_revision = self
+                    .root
+                    .config_read_word(current, CLASS_SUBCLASS_PROG_IF_REVISION_ID_OFFSET);
                 let device_id = (device_vendor >> 16) as u16;
                 let vendor_id = device_vendor as u16;
                 let class = (class_revision >> 24) as u8;
                 let subclass = (class_revision >> 16) as u8;
                 let prog_if = (class_revision >> 8) as u8;
                 let revision = class_revision as u8;
-                let bist_type_latency_cache = self.root.config_read_word(current, 12);
+                let bist_type_latency_cache = self
+                    .root
+                    .config_read_word(current, BIST_HEADER_LATENCY_CACHE_SIZE_OFFSET);
                 let header_type = HeaderType::from((bist_type_latency_cache >> 16) as u8 & 0x7f);
+                // The interrupt line is in the lower 8 bits of this u32,
+                // so we can simply use as u8 to get the IRQ.
+                let irq = self.root.config_read_word(
+                    current,
+                    MAX_LATENCY_MIN_GRANT_INTERRUPT_PIN_INTERRUPT_LINE_OFFSET,
+                ) as u8;
                 return Some((
                     current,
                     DeviceFunctionInfo {
@@ -518,6 +591,7 @@ impl Iterator for BusDeviceIterator {
                         prog_if,
                         revision,
                         header_type,
+                        irq,
                     },
                 ));
             }
@@ -568,19 +642,22 @@ pub struct DeviceFunctionInfo {
     pub revision: u8,
     /// The type of PCI device.
     pub header_type: HeaderType,
+    /// The interrupt line of PCI device.
+    pub irq: u8,
 }
 
 impl Display for DeviceFunctionInfo {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(
             f,
-            "{:04x}:{:04x} (class {:02x}.{:02x}, rev {:02x}) {:?}",
+            "{:04x}:{:04x} (class {:02x}.{:02x}, rev {:02x}) {:?} [irq: {}]",
             self.vendor_id,
             self.device_id,
             self.class,
             self.subclass,
             self.revision,
             self.header_type,
+            self.irq
         )
     }
 }
