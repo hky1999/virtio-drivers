@@ -146,6 +146,11 @@ impl PciTransport {
                         device_function,
                         capability.offset + CAP_NOTIFY_OFF_MULTIPLIER_OFFSET,
                     );
+                    log::debug!(
+                        "get notify_off_multiplier {} at {:#x}",
+                        notify_off_multiplier,
+                        capability.offset + CAP_NOTIFY_OFF_MULTIPLIER_OFFSET
+                    );
                 }
                 VIRTIO_PCI_CAP_ISR_CFG if isr_cfg.is_none() => {
                     isr_cfg = Some(struct_info);
@@ -250,6 +255,16 @@ impl Transport for PciTransport {
 
             let offset_bytes = usize::from(queue_notify_off) * self.notify_off_multiplier as usize;
             let index = offset_bytes / size_of::<u16>();
+
+            log::debug!(
+                "notify queue {} queue_notify_off {:#x} multiplier {:#x} offset_bytes {:#x} index {:#x}",
+                queue,
+                queue_notify_off,
+                self.notify_off_multiplier,
+                offset_bytes,
+                index
+            );
+
             addr_of_mut!((*self.notify_region.as_ptr())[index]).vwrite(queue);
         }
     }
@@ -285,14 +300,29 @@ impl Transport for PciTransport {
         driver_area: PhysAddr,
         device_area: PhysAddr,
     ) {
+        use log::info;
         // Safe because the common config pointer is valid and we checked in get_bar_region that it
         // was aligned.
+        info!("virtio-drivers pci queue_set q {} size {} ", queue, size);
         unsafe {
             volwrite!(self.common_cfg, queue_select, queue);
             volwrite!(self.common_cfg, queue_size, size as u16);
+            info!(
+                "virtio-drivers pci queue_set descriptors {:#x} ",
+                descriptors
+            );
             volwrite!(self.common_cfg, queue_desc, descriptors as u64);
+            info!(
+                "virtio-drivers pci queue_set driver_area: {:#x}",
+                driver_area
+            );
             volwrite!(self.common_cfg, queue_driver, driver_area as u64);
+            info!(
+                "virtio-drivers pci queue_set device_area: {:#x}",
+                device_area
+            );
             volwrite!(self.common_cfg, queue_device, device_area as u64);
+            info!("virtio-drivers pci queue_set enable queue {} !!!", queue);
             volwrite!(self.common_cfg, queue_enable, 1);
         }
     }

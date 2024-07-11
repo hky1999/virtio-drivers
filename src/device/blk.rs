@@ -176,6 +176,7 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
     ///
     /// Blocks until the read completes or there is an error.
     pub fn read_blocks(&mut self, block_id: usize, buf: &mut [u8]) -> Result {
+        log::warn!("read_blocks sector {} size {:#x}", block_id, buf.len());
         assert_ne!(buf.len(), 0);
         assert_eq!(buf.len() % SECTOR_SIZE, 0);
         self.request_read(
@@ -292,6 +293,7 @@ impl<H: Hal, T: Transport> VirtIOBlk<H, T> {
     ///
     /// Blocks until the write is complete or there is an error.
     pub fn write_blocks(&mut self, block_id: usize, buf: &[u8]) -> Result {
+        log::debug!("write_blocks sector {} size {:#x}", block_id, buf.len());
         assert_ne!(buf.len(), 0);
         assert_eq!(buf.len() % SECTOR_SIZE, 0);
         self.request_write(

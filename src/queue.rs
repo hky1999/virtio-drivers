@@ -342,6 +342,15 @@ impl<H: Hal, const SIZE: usize> VirtQueue<H, SIZE> {
             // Safe because self.used points to a valid, aligned, initialised, dereferenceable, readable
             // instance of UsedRing.
             let avail_event = unsafe { (*self.used.as_ptr()).avail_event.load(Ordering::Acquire) };
+
+            log::debug!(
+                "should_notify() q[{}]: avail_event {} avail_idx {} last_used_idx {}",
+                self.queue_idx,
+                avail_event,
+                self.avail_idx,
+                self.last_used_idx
+            );
+
             self.avail_idx >= avail_event.wrapping_add(1)
         } else {
             // Safe because self.used points to a valid, aligned, initialised, dereferenceable, readable
